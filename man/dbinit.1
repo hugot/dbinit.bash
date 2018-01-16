@@ -1,0 +1,48 @@
+.TH DBINIT.BASH 1 01-13-2018 redrock9 DBINIT.BASH
+
+.SH NAME
+    dbinit.bash
+
+.SH SYNOPSIS 
+    
+.B  dbinit
+.RI  [ OPTIONS ]
+
+.SH CONFIGURATION
+To use this script, the working directory should have either one of the following folder structures in it:
+
+Structure 1:
+  ./create
+  ./insert
+
+structure 2:
+  ./sql/{create,insert}
+
+structure 3:
+  ./fixtures/sql/{create,insert}
+
+The \fIcreate\fP directory should contain SQL scripts with code for anything that needs to happen on database creation, like table creation statements.
+
+The \fIinsert\fP directory should contain SQL scripts that insert default data into the database. Insertion scripts are optional
+so this folder may be empty.
+
+.SH DESCRIPTION
+Utility script that helps developers to quicky create test databases and insert test data into them. For this script to work, SQL files with your 
+database creation/insertion scripts should be placed in directories as described in the \fBCONFIGURATION\fP section.
+
+.SH OPTIONS
+ \fB-f\fP, \fB--fresh\fP \fIDATABASE_NAME\fP      Delete the database with the given name before executing any scripts. (skips prompt)
+
+ \fB-u\fP, \fB--user\fP  \fIMYSQL_USER\fP         Set the username that should be used for the database connection. (root by default)
+
+ \fB-p\fP, \fB--password\fP \fIMYSQL_PASSWORD\fP  Set the password that should be used for the database connection. (skips prompt)
+
+ \fB-s\fP, \fB--host\fP \fIMYSQL_IP\fP            Set the IP address or hostname of the mysql instance.
+
+ \fB-p\fP, \fB--port\fP \fIMYSQL_PORT\fP          Set the port the mysql instance can be reached on.
+ 
+ \fB-n\fP, \fB--no-insert\fP                Skip insertion scripts.
+
+ \fB-x\fP, \fB--initial\fP                  Skip database deletion prompt.
+
+ \fB-h\fP, \fB--help\fP                     Show this prompt.

@@ -1,0 +1,351 @@
+#!/bin/bash
+##
+# Script to reinitialize a development database with default tables and
+# rows.
+
+if [[ -z "$BASHER_ROOT" ]]; then
+  echo "This script depends on the basher package manager and its include function to load dependencies."\
+    "BASHER_ROOT needs to be set to locate basher on your system. BASHER_ROOT was not found. Exiting."
+  exit 200
+fi
+
+source $BASHER_ROOT/lib/include.bash
+
+# Include dependencies
+include redrock9/bash-array-utils lib/Array.bash
+include redrock9/bash-params lib/Params.bash
+
+# Terminal colors
+declare -r CESC='\033['
+declare -r GREEN="${CESC}0;32m"
+declare -r RED="${CESC}0;31m"
+declare -r NC="${CESC}0m"
+
+# Keys for config array
+declare -ri DATABASE_NAME=0
+declare -ri MYSQL_PASSWORD=1
+declare -ri NO_INSERT=2
+declare -ri DELETE_DATABASE=3
+declare -ri DATABASE_IP=4
+declare -ri DATABASE_PORT=5
+declare -ri MYSQL_USER=6
+
+declare CREATE_DIR=''
+declare INSERT_DIR=''
+
+printUsage() {
+  cat <<'EOF'
+dbinit.bash -- Create development databases and insert default data.
+
+usage: dbinit(.bash) [ OPTIONS ]
+
+options:
+ -f, --fresh     DATABASE NAME  Delete the database with the given name 
+                                before inserting fixtures. (Skips prompt)
+                                    
+ -u, --user      MYSQL USER     Set the username that should be used for 
+                                the database connection. (root by default)
+                                    
+ -p, --password  MYSQL PASSWORD Set the password that should be used for 
+                                the database connection.
+                                    
+ -s, --host      MYSQL IP       Set the IP address or hostname of the mysql
+                                instance.
+                                    
+ -p, --port      MYSQL PORT     Set the port the mysql instance can be reached on.
+                                    
+ -n, --no-insert                Skip insertion scripts.
+                                
+ -x, --initial                  Skip database deletion prompt.
+                                  
+ -h, --help                     Show this prompt.
+EOF
+}
+
+##
+# Execute a mysql command with mysql root privileges.
+mysqlRoot() {
+  declare -a config=() arguments=()
+  Params::parse --dictionary config --array arguments -- "$@" || exit 1
+
+  mysql --host="${config[$DATABASE_IP]}" --port="${config[DATABASE_PORT]}" \
+    -u "${config[$MYSQL_USER]}" "${arguments[@]}"
+}
+
+##
+# Check if the fixture directories exist.
+checkDirectories() {
+  if [ -d create ] && [ -d insert ]; then
+    CREATE_DIR='create'
+    INSERT_DIR='insert'
+  elif [ -d sql/insert ] && [ -d sql/create ]; then
+    CREATE_DIR='sql/create'
+    INSERT_DIR='sql/insert'
+  elif [ -d fixtures/sql/create ] &&
+    [ -d fixtures/sql/insert ] &&
+    [ -d .git ]; then
+    CREATE_DIR='fixtures/sql/create'
+    INSERT_DIR='fixtures/sql/insert'
+  else
+    echo 'No fixtures direcory for sql was detected.' \
+      'Fixtures should be placed in ' fixtures/sql/{create,insert}
+    exit 4
+  fi
+}
+
+##
+# Echo the schemas that are currently in the selected mysql install.
+getSchemas() {
+  declare -a config=()
+  Params::parse -d config -- "$@" || exit 1
+  mysqlRoot --dictionary -k "${!config[@]}" -v "${config[@]}" \
+    --array \\-p"${config[$MYSQL_PASSWORD]}" \\-e 'SHOW SCHEMAS;' 2>&1
+}
+
+##
+# Let user pick a schema and execute a callback.
+# $1: config
+# $2: use of the schema to be picked
+# $3: callback to be executed with the schema name as argument.
+pickSchema() {
+  declare -a config=()
+  declare usage="" picked_schema='' func=''
+  Params::parse --dictionary config --string usage --string func -- "$@" || exit 1
+
+  if ! declare -f "$func" &>>/dev/null; then
+    echo "$(caller): No defined function specified for callback." >&2
+    exit 15
+  fi
+
+  declare -a schemas=($(getSchemas -d -k "${!config[@]}" -v "${config[@]}"))
+  echo -e "${GREEN} Databases currently in the selected mysql install:${NC}"
+  for schema in "${schemas[@]}"; do
+    history -s "$schema"
+    echo -e "${GREEN} $schema ${NC}"
+  done
+  read -rep "Pick the schema $usage (use up/down arrow keys to select)" picked_schema
+
+  read -p "Picked: $picked_schema, is this correct? (y/n)[n]:" ans
+  case $ans in
+    y | Y)
+      if ! Array::hasValue schemas "$picked_schema"; then
+        echo "Selected schema ($picked_schema) does not exist" >&2
+        exit 1
+      fi
+      $func -d -k "${!config[@]}" -v "${config[@]}" -s "$picked_schema"
+      ;;
+    *)
+      echo 'Okay, exiting.'
+      exit 8
+      ;;
+  esac
+}
+
+##
+# Delete a schema from the database.
+# $1: mysql password
+# $2: schema name
+deleteSchema() {
+  declare -a config=()
+  declare schema_name=''
+  Params::parse --dictionary config --string schema_name -- "$@" || exit 1
+  echo -e "${GREEN} ==== Deleting schema $schema_name from mysql instance ${NC}"
+
+  mysqlRoot -d -k "${!config[@]}" -v "${config[@]}" \
+    --array \\-p"${config[$MYSQL_PASSWORD]}" \\-e "DROP SCHEMA $schema_name"
+}
+
+##
+# Parse config and ask interactively for unset options.
+# $1: config array
+# $2: callback to pass the config array to
+setup() {
+  declare -a config=()
+  declare callback=""
+  Params::parse --dictionary config --string callback -- "$@" || exit 1
+  if ! declare -f "$callback" &>>/dev/null; then
+    echo "$(caller): No valid callback provided. Exiting." >&2
+    exit 1
+  fi
+
+  # Decide on database ip and port
+  [[ -z ${config[$DATABASE_IP]} ]] && config[$DATABASE_IP]=127.0.0.1
+  [[ -z ${config[$DATABASE_PORT]} ]] && config[$DATABASE_PORT]=3306
+
+  #Decide on database user
+  [[ -z ${config[$MYSQL_USER]} ]] && config[$MYSQL_USER]='root'
+
+  if [[ -z ${config[$MYSQL_PASSWORD]} ]]; then
+    read -rsp "Please provide the password for mysql user \"${config[$MYSQL_USER]}\":" password
+    echo
+    config[$MYSQL_PASSWORD]="$password"
+  fi
+
+  if ! mysqlRoot -d -k "${!config[@]}" -v "${config[@]}" \
+    -a \\-p"${config[$MYSQL_PASSWORD]}" \\-e "SHOW SCHEMAS" &>>/dev/null; then
+    echo -e "${RED} Failed to connect to the mysql instance at" \
+      "${config[$DATABASE_IP]}:${config[$DATABASE_PORT]}, is your password correct?" \
+      "If so, please make sure that the mysql server is running.${NC}" >&2
+    exit 6
+  fi
+
+  if [[ ${config[$DELETE_DATABASE]} == true ]]; then
+    if [[ -z ${config[$DATABASE_NAME]} ]]; then
+      echo "Database name needs to be specified to be able to do a fresh create." >&2
+      exit 1
+    fi
+
+    deleteSchema -d -k "${!config[@]}" -v "${config[@]}" -s "${config[$DATABASE_NAME]}" || \
+      handleSQLError "deletion" "DELETE" "${config[$MYSQL_USER]}"
+  elif [[ "${config[$DELETE_DATABASE]}" != false ]] && [[ -t 1 ]]; then
+    read -rp 'Do you wish to delete the database before creating/inserting the fixture tables? (y/n)[n]:' ans
+    echo
+
+    case "$ans" in
+      y | Y)
+        if [[ -z ${config[$DATABASE_NAME]} ]]; then
+          pickSchema -d -k "${!config[@]}" -v "${config[@]}" \
+            --string "to be deleted" --string "deleteSchema" || \
+            handleSQLError "deletion" "DELETE" "${config[$MYSQL_USER]}"
+        fi
+        ;;
+    esac
+  fi
+
+  $callback -d -k "${!config[@]}" -v "${config[@]}"
+}
+
+##
+# Load fixtures from the fixture directories.
+# $1: config array
+loadFixtures() {
+  # The config array.
+  declare -a config=()
+  Params::parse --dictionary config -- "$@" || exit 1
+  echo -e "${GREEN} ==== Attempting to load fixtures... ${NC}"
+
+  if ls $CREATE_DIR/*.sql &>>/dev/null; then
+    echo -e "${GREEN} ==== Executing creation scripts $CREATE_DIR ${NC}"
+    cat $CREATE_DIR/*.sql | mysqlRoot -d -k "${!config[@]}" \
+          -v "${config[@]}" -a \\-p"${config[$MYSQL_PASSWORD]}" || \
+          handleSQLError "creation" "CREATE" "${config[$MYSQL_USER]}"
+  else
+    echo "No scripts found in $CREATE_DIR. Skipping."
+  fi
+
+  if [[ -z "${config[$NO_INSERT]}" ]]; then
+    if ls $INSERT_DIR/*.sql &>>/dev/null; then
+      echo -e "${GREEN} ==== Executing insert scripts in $INSERT_DIR ${NC}"
+      cat $INSERT_DIR/*.sql | mysqlRoot -d -k "${!config[@]}" \
+        -v "${config[@]}" -a \\-p"${config[$MYSQL_PASSWORD]}" || \
+        handleSQLError "insertion" "INSERT" "${config[$MYSQL_USER]}"
+    else
+      echo "No scripts found in $INSERT_DIR. Skipping."
+    fi
+  fi
+}
+
+##
+# Tell the user script execution failed and provide a tip if usefull.
+# $1: script_type
+# $2: privilege_type
+# $3: user
+handleSQLError() {
+  declare script_type="$1" privilege_type="$2" user="$3"
+  if [[ $user != 'root' ]]; then
+    printf "${RED} Failed to execute %s scripts, does the user have %s privileges? ${NC}\n"\
+      "$script_type" "$privilege_type"
+  else
+    printf "${RED} Failed to execute %s scripts, exiting. ${NC}\n" "$script_type"
+  fi
+  exit 1
+}
+
+##
+# Check if mysqld is installed.
+# If not installed and running noninteractively, exit.
+# If not installed and running interactively, offer to install.
+checkMysql() {
+  declare ans=''
+  if ! which mysql &>>/dev/null; then
+    echo " ${RED} Mysql client was not found on this system. Please install it. ${NC}"
+    if ! which mysqld &>>/dev/null; then
+      echo "${RED} If you are using linux and wish to work with a local " \
+        "development database, please also install the mysql server. " \
+        "If you are using windows and running this script from the WSL, you might already" \
+        "have mysql installed, in that case just installing the mysql client will be enough. ${NC}"
+    fi
+    exit 1
+  fi
+}
+
+##
+# Boolean: return if the argument is valid.
+# $1: option that is checked for
+# $2: provided argument
+validArgument() {
+  case "$2" in
+    -* | --*)
+      echo "$2 is not a valid argument." >&2
+      return 1
+      ;;
+    '')
+      echo "Option $1 requires an argument." >&2
+      return 1
+  esac
+  return 0
+}
+
+declare -a config=()
+declare argument="$1"
+while shift; do
+  case "$argument" in
+    -f | --fresh)
+      validArgument "$argument" "$1" || exit 1
+      config[$DELETE_DATABASE]=true
+      config[$DATABASE_NAME]="$1"
+      shift
+      ;;
+    -p | --password)
+      validArgument "$argument" "$1" || exit 1
+      config[$MYSQL_PASSWORD]="$1"
+      shift
+      ;;
+    -n | --no-insert)
+      config[$NO_INSERT]=true
+      ;;
+    -i | --port)
+      validArgument "$argument" "$1" || exit 1
+      config[$DATABASE_PORT]="$1"
+      shift
+      ;;
+    -s | --host)
+      validArgument "$argument" "$1" || exit 1
+      config[$DATABASE_IP]="$1"
+      shift
+      ;;
+    -x | --initial)
+      config[$DELETE_DATABASE]=false
+      ;;
+    -u | --user)
+      validArgument "$argument" "$1" || exit 1
+      config[$MYSQL_USER]="$1"
+      shift
+      ;;
+    -h | --help)
+      printUsage >&2
+      exit 0
+      ;;
+    *)
+      echo "Unexpected argument: $argument" >&2
+      printUsage >&2
+      exit 1
+      ;;
+  esac
+  argument="$1"
+done
+
+echo -e "${GREEN} ==== DBINIT script starting. ${NC}"
+checkDirectories
+checkMysql
+setup -d -k "${!config[@]}" -v "${config[@]}" --string loadFixtures

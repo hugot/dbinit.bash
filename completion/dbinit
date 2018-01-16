@@ -1,0 +1,8 @@
+
+complete -W "-f --fresh\
+    -p --password \
+    -s --host \
+    -p --port \
+    -n --no-insert \
+    -x --initial \
+    -h --help" dbinit
