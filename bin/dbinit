@@ -81,9 +81,7 @@ checkDirectories() {
   elif [ -d sql/insert ] && [ -d sql/create ]; then
     CREATE_DIR='sql/create'
     INSERT_DIR='sql/insert'
-  elif [ -d fixtures/sql/create ] &&
-    [ -d fixtures/sql/insert ] &&
-    [ -d .git ]; then
+  elif [ -d fixtures/sql/create ] && [ -d fixtures/sql/insert ]; then
     CREATE_DIR='fixtures/sql/create'
     INSERT_DIR='fixtures/sql/insert'
   else
@@ -225,7 +223,7 @@ loadFixtures() {
   echo -e "${GREEN} ==== Attempting to load fixtures... ${NC}"
 
   if ls $CREATE_DIR/*.sql &>>/dev/null; then
-    echo -e "${GREEN} ==== Executing creation scripts $CREATE_DIR ${NC}"
+    echo -e "${GREEN} ==== Executing creation scripts in $CREATE_DIR ${NC}"
     cat $CREATE_DIR/*.sql | mysqlRoot -d -k "${!config[@]}" \
           -v "${config[@]}" -a \\-p"${config[$MYSQL_PASSWORD]}" || \
           handleSQLError "creation" "CREATE" "${config[$MYSQL_USER]}"
